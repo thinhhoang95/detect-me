@@ -5,6 +5,7 @@ from pathlib import Path
 import cv2
 import torch
 import torch.backends.cudnn as cudnn
+import numpy as np
 from numpy import random
 
 from models.experimental import attempt_load
@@ -13,6 +14,12 @@ from utils.general import check_img_size, check_requirements, non_max_suppressio
     xyxy2xywh, strip_optimizer, set_logging, increment_path
 from utils.plots import plot_one_box
 from utils.torch_utils import select_device, load_classifier, time_synchronized
+
+from PIL import Image 
+from matplotlib import cm
+
+from pyzbar.pyzbar import decode
+import json
 
 import time
 
@@ -50,7 +57,7 @@ def detect(save_img=False):
     # Set Dataloader
     vid_path, vid_writer = None, None
     if webcam:
-        view_img = True
+        view_img = False
         cudnn.benchmark = True  # set True to speed up constant image size inference
         dataset = LoadStreams(source, img_size=imgsz)
     else:
@@ -63,12 +70,24 @@ def detect(save_img=False):
 
     # Run inference
     t0 = time.time()
+    category = '0'
     img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
     _ = model(img.half() if half else img) if device.type != 'cpu' else None  # run once
     for path, img, im0s, vid_cap in dataset:
+        height, width = img.shape[:2]
+        pil_img = np.copy(img[0,0,:,:])
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
+
+        # Check for QR code to change category:
+        qr_result = decode(pil_img)
+        for code in qr_result:
+            content = code.data 
+            parsed = json.loads(content)
+            id = parsed['id']
+            print('Category switched to {}!'.format(id))
+
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
 
@@ -113,21 +132,28 @@ def detect(save_img=False):
                         if working == False: 
                             last_presence_detected = time.time()
                             working = True
-                            print('Presence detected. Check again in 5 minutes.')
-                        time.sleep(10.0)
+                            print('Presence detected.')
+                        time.sleep(1.0)
                         
                 
                 if objs_detected == False and working==True:
                     print('Subject gone? ')
                     attempts += 1
-                if attempts > 5:
+
+                if time.time() - last_presence_detected > 5:
+                    time_worked = last_presence_detected - time.time()
+                    with open('session_' + str(start_of_detection) + '.txt', 'a') as f:
+                        f.write(str(time.time()) + ',' + category + ',' + str(time_worked) + '\n')
+                    last_presence_detected = time.time()
+                    print('Work periodically saved. Current category: {}, time: {:.2f}'.format(category, time_worked))
+                if attempts > 10:
                     if working == True:
                         working = False
                         time_worked = last_presence_detected - time.time()
-                        print('Subject has gone. {:.0f} work session logged. Check again in 5 minutes.'.format(time_worked))
+                        print('Subject has gone. {:.0f} work session logged.'.format(time_worked))
                         with open('session_' + str(start_of_detection) + '.txt', 'a') as f:
-                            f.write(str(time.time()) + ',' + str(time_worked) + '\n')
-                    time.sleep(10.0)
+                            f.write(str(time.time()) + ',' + category + ',' + str(time_worked) + '\n')
+                    time.sleep(1.0)
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
@@ -142,7 +168,7 @@ def detect(save_img=False):
                         plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
 
             # Print time (inference + NMS)
-            print(f'{s}Done. ({t2 - t1:.3f}s)')
+            # print(f'{s}Done. ({t2 - t1:.3f}s)')
 
             # Stream results
             if view_img:
@@ -153,7 +179,7 @@ def detect(save_img=False):
                 if dataset.mode == 'image':
                     cv2.imwrite(save_path, im0)
        
-    print(f'Done. ({time.time() - t0:.3f}s)')
+    # Done. ({time.time() - t0:.3f}s)')
 
 
 if __name__ == '__main__':
